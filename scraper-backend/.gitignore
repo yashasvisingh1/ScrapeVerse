@@ -1,0 +1,11 @@
+# Go build output
+bin/
+*.exe
+
+# Local environment
+.env
+.env.*
+!.env.example
+
+# Output artifacts
+output/*.csv
