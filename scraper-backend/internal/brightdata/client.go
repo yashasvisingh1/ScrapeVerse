@@ -96,6 +96,9 @@ func (c *BrightDataClient) GetCollectionStatus(ctx context.Context, collectionID
 	if err != nil {
 		return "", fmt.Errorf("read status response: %w", err)
 	}
+	if resp.StatusCode == http.StatusAccepted {
+		return "pending", nil
+	}
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
 		return "", fmt.Errorf("collection status request failed with status %s: %s", resp.Status, strings.TrimSpace(string(body)))
 	}
@@ -105,11 +108,7 @@ func (c *BrightDataClient) GetCollectionStatus(ctx context.Context, collectionID
 		return normalizeStatus(status), nil
 	}
 
-	results, err := decodeResults(body)
-	if err != nil {
-		return "pending", nil
-	}
-	if len(results) > 0 {
+	if _, err := decodeResults(body); err == nil {
 		return "completed", nil
 	}
 	return "pending", nil
@@ -139,6 +138,9 @@ func (c *BrightDataClient) GetCollectionResults(ctx context.Context, collectionI
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return nil, fmt.Errorf("read dataset response: %w", err)
+	}
+	if resp.StatusCode == http.StatusAccepted {
+		return nil, fmt.Errorf("collection %s is not ready", collectionID)
 	}
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
 		return nil, fmt.Errorf("dataset request failed with status %s: %s", resp.Status, strings.TrimSpace(string(body)))
@@ -269,12 +271,43 @@ func findStatus(value any) (string, bool) {
 
 func decodeResults(payload []byte) ([]map[string]any, error) {
 	var value any
-	if err := json.Unmarshal(payload, &value); err != nil {
-		return nil, err
+	if err := json.Unmarshal(payload, &value); err == nil {
+		results, ok := findResultObjects(value)
+		if ok {
+			return results, nil
+		}
 	}
-	results, ok := findResultObjects(value)
-	if !ok {
-		return nil, fmt.Errorf("dataset response did not contain a result array")
+
+	results, err := decodeNDJSON(payload)
+	if err != nil {
+		return nil, fmt.Errorf("dataset response did not contain a result array: %w", err)
+	}
+	return results, nil
+}
+
+func decodeNDJSON(payload []byte) ([]map[string]any, error) {
+	lines := strings.Split(strings.TrimSpace(string(payload)), "\n")
+	if len(lines) == 0 || (len(lines) == 1 && strings.TrimSpace(lines[0]) == "") {
+		return nil, fmt.Errorf("empty response")
+	}
+
+	results := make([]map[string]any, 0, len(lines))
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		var record map[string]any
+		if err := json.Unmarshal([]byte(line), &record); err != nil {
+			return nil, err
+		}
+		if _, hasStatus := record["status"]; hasStatus {
+			return nil, fmt.Errorf("response contains status instead of results")
+		}
+		results = append(results, record)
+	}
+	if len(results) == 0 {
+		return nil, fmt.Errorf("empty result set")
 	}
 	return results, nil
 }
@@ -288,9 +321,7 @@ func findResultObjects(value any) ([]map[string]any, bool) {
 				results = append(results, m)
 			}
 		}
-		if len(results) > 0 {
-			return results, true
-		}
+		return results, true
 	case map[string]any:
 		for _, key := range []string{"data", "results", "items", "records", "output"} {
 			if nested, ok := v[key]; ok {
@@ -301,9 +332,7 @@ func findResultObjects(value any) ([]map[string]any, bool) {
 							results = append(results, m)
 						}
 					}
-					if len(results) > 0 {
-						return results, true
-					}
+					return results, true
 				}
 			}
 		}

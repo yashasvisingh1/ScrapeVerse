@@ -85,7 +85,7 @@ GET https://api.brightdata.com/dca/dataset?id=COLLECTION_ID
 Authorization: Bearer API_TOKEN
 ```
 
-This is the mechanism used for completion detection because the Bright Data API returns status information or a completed dataset payload at that endpoint. The implementation accepts either a status field or a non-empty result array and treats the job as complete when the dataset is ready.
+This is the mechanism used for completion detection. A `202 Accepted` response means the collection is still being processed, while a successful `200` dataset response means it is ready. The implementation also accepts JSON arrays, wrapper objects, and newline-delimited JSON (NDJSON), including an empty completed array.
 
 ## Polling behavior
 

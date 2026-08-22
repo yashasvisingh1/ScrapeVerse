@@ -77,6 +77,23 @@ func TestGetCollectionStatusUsesDatasetEndpoint(t *testing.T) {
 	}
 }
 
+func TestGetCollectionStatusTreatsAcceptedAsPending(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusAccepted)
+		_, _ = w.Write([]byte(`{"status":"starting"}`))
+	}))
+	defer server.Close()
+
+	client := NewClient(server.URL, "token", "collector", server.Client())
+	status, err := client.GetCollectionStatus(context.Background(), "job-pending")
+	if err != nil {
+		t.Fatalf("GetCollectionStatus() returned error: %v", err)
+	}
+	if status != "pending" {
+		t.Fatalf("status = %q, want pending", status)
+	}
+}
+
 func TestPollingBehaviorStopsOnCompletion(t *testing.T) {
 	calls := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -118,6 +135,38 @@ func TestGetCollectionResultsParsesDynamicArray(t *testing.T) {
 	}
 	if results[0]["name"] != "Product A" {
 		t.Fatalf("first record name = %q, want %q", results[0]["name"], "Product A")
+	}
+}
+
+func TestGetCollectionResultsParsesNDJSON(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("{\"name\":\"Product A\"}\n{\"name\":\"Product B\"}\n"))
+	}))
+	defer server.Close()
+
+	client := NewClient(server.URL, "token", "collector", server.Client())
+	results, err := client.GetCollectionResults(context.Background(), "job-ndjson")
+	if err != nil {
+		t.Fatalf("GetCollectionResults() returned error: %v", err)
+	}
+	if len(results) != 2 || results[1]["name"] != "Product B" {
+		t.Fatalf("results = %#v, want two NDJSON records", results)
+	}
+}
+
+func TestGetCollectionStatusTreatsEmptyArrayAsCompleted(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`[]`))
+	}))
+	defer server.Close()
+
+	client := NewClient(server.URL, "token", "collector", server.Client())
+	status, err := client.GetCollectionStatus(context.Background(), "job-empty")
+	if err != nil {
+		t.Fatalf("GetCollectionStatus() returned error: %v", err)
+	}
+	if status != "completed" {
+		t.Fatalf("status = %q, want completed", status)
 	}
 }
 
