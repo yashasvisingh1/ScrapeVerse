@@ -17,6 +17,9 @@ type Config struct {
 	BrightDataBaseURL     string
 	PollInterval          time.Duration
 	PollTimeout           time.Duration
+	DatabaseURL           string
+	ScrapeTTL             time.Duration
+	ScraperWorkerInterval time.Duration
 	OutputDir             string
 }
 
@@ -41,6 +44,9 @@ func Load() (*Config, error) {
 	if outputDir == "" {
 		outputDir = "./output"
 	}
+	databaseURL := strings.TrimSpace(os.Getenv("DATABASE_URL"))
+	scrapeTTL := getEnvDuration("SCRAPE_TTL", 30*time.Minute)
+	workerInterval := getEnvDuration("SCRAPER_WORKER_INTERVAL", time.Minute)
 
 	if apiToken == "" {
 		return nil, fmt.Errorf("BRIGHT_DATA_API_TOKEN is required")
@@ -57,6 +63,12 @@ func Load() (*Config, error) {
 	if pollTimeoutSeconds < pollIntervalSeconds {
 		return nil, fmt.Errorf("POLL_TIMEOUT_SECONDS must be greater than or equal to POLL_INTERVAL_SECONDS")
 	}
+	if scrapeTTL <= 0 {
+		return nil, fmt.Errorf("SCRAPE_TTL must be greater than zero")
+	}
+	if workerInterval <= 0 {
+		return nil, fmt.Errorf("SCRAPER_WORKER_INTERVAL must be greater than zero")
+	}
 
 	return &Config{
 		BrightDataAPIToken:    apiToken,
@@ -64,8 +76,23 @@ func Load() (*Config, error) {
 		BrightDataBaseURL:     baseURL,
 		PollInterval:          time.Duration(pollIntervalSeconds) * time.Second,
 		PollTimeout:           time.Duration(pollTimeoutSeconds) * time.Second,
+		DatabaseURL:           databaseURL,
+		ScrapeTTL:             scrapeTTL,
+		ScraperWorkerInterval: workerInterval,
 		OutputDir:             outputDir,
 	}, nil
+}
+
+func getEnvDuration(name string, fallback time.Duration) time.Duration {
+	value := strings.TrimSpace(os.Getenv(name))
+	if value == "" {
+		return fallback
+	}
+	parsed, err := time.ParseDuration(value)
+	if err != nil {
+		return fallback
+	}
+	return parsed
 }
 
 func loadDotEnv(path string) error {

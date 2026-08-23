@@ -15,6 +15,19 @@ func NewScraper(client *BrightDataClient) *Scraper {
 	return &Scraper{Client: client}
 }
 
+// Search runs the existing trigger, polling, and result retrieval flow.
+func (s *Scraper) Search(ctx context.Context, query string, pollInterval, pollTimeout time.Duration) ([]map[string]any, error) {
+	collectionID, err := s.Client.TriggerCollection(ctx, query)
+	if err != nil {
+		return nil, err
+	}
+	_, err = s.Client.PollForCompletion(ctx, collectionID, pollInterval, pollTimeout)
+	if err != nil {
+		return nil, err
+	}
+	return s.Client.GetCollectionResults(ctx, collectionID)
+}
+
 func (s *Scraper) Run(ctx context.Context, collectionID string, pollInterval, pollTimeout time.Duration) ([]map[string]any, string, error) {
 	if s == nil || s.Client == nil {
 		return nil, "", fmt.Errorf("bright data scraper is not configured")

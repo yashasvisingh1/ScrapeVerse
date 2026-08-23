@@ -4,8 +4,11 @@ import "encoding/json"
 
 // ScrapeRequest contains the request payload accepted by the backend HTTP API.
 type ScrapeRequest struct {
-	Query string `json:"query"`
-	URL   string `json:"url,omitempty"`
+	Query  string `json:"query,omitempty"`
+	URL    string `json:"url,omitempty"`
+	Brand  string `json:"brand,omitempty"`
+	Item   string `json:"item,omitempty"`
+	Gender string `json:"gender,omitempty"`
 }
 
 // ScrapeResponse is returned to the client after a successful scrape.

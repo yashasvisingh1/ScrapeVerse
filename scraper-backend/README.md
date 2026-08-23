@@ -1,6 +1,6 @@
 # Bright Data Scraper Backend
 
-This project provides a Go backend service for triggering a Bright Data Scraper Studio collector, polling until the job completes, downloading the dataset, writing results to CSV, and returning the result metadata plus CSV path to callers.
+This project provides a Go backend service for triggering a Bright Data Scraper Studio collector, polling until the job completes, downloading the dataset, writing results to CSV, and persisting product price history in PostgreSQL.
 
 ## What this project does
 
@@ -10,6 +10,8 @@ This project provides a Go backend service for triggering a Bright Data Scraper 
 - retrieves collection results from the Bright Data API
 - writes records to a CSV file with a backend-generated RFC3339 timestamp column
 - returns JSON metadata and result data to the caller
+- stores canonical brand/item/gender searches, products, and immutable price observations
+- serves fixed-dimension product results from PostgreSQL and refreshes stale data in the background
 
 ## Architecture
 
@@ -31,7 +33,12 @@ internal/brightdata
     |   - dataset retrieval
     |   - response parsing
     v
-internal/csvwriter
+  internal/service
+    |
+    +--> internal/repository --> PostgreSQL
+    |
+    v
+  internal/csvwriter
     |
     v
 output/*.csv
@@ -60,9 +67,29 @@ BRIGHT_DATA_BASE_URL=https://api.brightdata.com
 POLL_INTERVAL_SECONDS=5
 POLL_TIMEOUT_SECONDS=300
 OUTPUT_DIR=./output
+DATABASE_URL=postgres://postgres:postgres@localhost:5432/scraper?sslmode=disable
+SCRAPE_TTL=30m
 ```
 
 Do not check in a real `.env` file. The project `.gitignore` excludes `.env` and `.env.*` except `.env.example`.
+
+`DATABASE_URL` is optional for backward compatibility. When it is set, the server verifies the connection at startup and persists successful fixed-dimension scrapes. `SCRAPE_TTL` defaults to `30m` and controls search freshness metadata.
+
+`SCRAPER_WORKER_INTERVAL` defaults to `1m`. The background worker finds never-scraped and expired searches, claims each refresh atomically in PostgreSQL, and refreshes one owner at a time.
+
+## Search catalog
+
+The MVP uses fixed search dimensions instead of parsing natural-language queries:
+
+```json
+{
+  "brand": "Nike",
+  "item": "Shoes",
+  "gender": "Men"
+}
+```
+
+`item` is required. Empty brand and gender values normalize to `all`. Values are trimmed, lowercased, and normalized for whitespace. A canonical key is formed as `brand:item:gender`, and the scraper query is formed from non-`all` dimensions, for example `nike shoes men` or `shoes men`.
 
 ## How Bright Data is used
 
@@ -139,13 +166,15 @@ Example:
 ```bash
 curl -X POST http://localhost:8080/api/scrape \
   -H "Content-Type: application/json" \
-  -d '{"query":"tops for women"}'
+  -d '{"brand":"Nike","item":"Shoes","gender":"Men"}'
 ```
 
-The `query` value is sent to the Scraper Studio collector as:
+For fixed-dimension requests, the backend normalizes the fields, looks up the canonical search in PostgreSQL, and returns the stored products. A never-scraped search is refreshed synchronously. A stale search returns its existing products immediately while a background refresh updates the database. Fresh searches do not call Bright Data.
+
+The generated scraper query is sent to the Scraper Studio collector as:
 
 ```json
-[{ "query": "tops for women" }]
+[{ "query": "nike shoes men" }]
 ```
 
 The collector's `InteractionCode.js` reads `input.query` and uses it to build the Amazon, Myntra, and Ajio search URLs. The legacy `url` request field is also accepted by the backend as an alias for `query`.
@@ -175,12 +204,53 @@ The collector's `InteractionCode.js` reads `input.query` and uses it to build th
 go test ./...
 ```
 
+## PostgreSQL migrations and seed
+
+Create a PostgreSQL database, set `DATABASE_URL`, and apply the initial migration:
+
+```bash
+psql "$DATABASE_URL" -f internal/repository/migrations/001_initial.sql
+```
+
+Then seed the initial catalog:
+
+```bash
+go run ./cmd/seed
+```
+
+The migration creates `searches`, `products`, and `product_prices`. Product identity is unique per search, retailer, and external ID. Price rows are append-only, so successful scrapes preserve historical observations.
+
+## Refresh lifecycle
+
+```text
+API request
+  |
+  +--> PostgreSQL search and latest prices
+  |       |
+  |       +--> fresh: return cached products
+  |       +--> stale: return cached products, start background refresh
+  |       +--> never scraped: claim and refresh synchronously
+  |
+  v
+PostgreSQL refresh lock
+  |
+  v
+Existing Bright Data trigger -> collection ID -> polling -> dataset parser
+  |
+  v
+Atomic product upsert + append price observations + update TTL
+```
+
+Refresh failures preserve existing products and price history, clear `refresh_in_progress`, and leave freshness timestamps unchanged so the worker can retry later. PostgreSQL's conditional `UPDATE ... WHERE refresh_in_progress=false` prevents duplicate Bright Data refreshes across concurrent requests or worker runs.
+
 ## Project structure
 
 ```text
 scraper-backend/
 ├── cmd/
 │   └── server/
+│       └── main.go
+│   └── seed/
 │       └── main.go
 ├── internal/
 │   ├── brightdata/
@@ -197,8 +267,20 @@ scraper-backend/
 │   ├── handlers/
 │   │   ├── scrape.go
 │   │   └── scrape_test.go
+│   ├── repository/
+│   │   ├── migrations/
+│   │   │   └── 001_initial.sql
+│   │   ├── repository.go
+│   │   ├── repository_test.go
+│   │   └── seed.go
+│   ├── service/
+│   │   ├── persistence.go
+│   │   └── search.go
 │   └── models/
-│       └── models.go
+│       ├── models.go
+│       ├── products.go
+│       ├── search.go
+│       └── search_test.go
 ├── .env.example
 ├── .gitignore
 ├── go.mod
@@ -209,5 +291,6 @@ scraper-backend/
 ## Notes
 
 - The code isolates Bright Data-specific HTTP logic under `internal/brightdata`.
-- The request body accepts `query`; `url` remains a compatibility alias. The collector receives the value as `input.query`.
+- The request body accepts `query`; `url` remains a compatibility alias. Fixed-dimension requests use `brand`, `item`, and `gender`; the collector receives the generated query as `input.query`.
+- Database persistence is additive and activates when `DATABASE_URL` is configured.
 - API tokens are never returned in any response and are never logged.

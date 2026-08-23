@@ -14,6 +14,7 @@ import (
 	"scraper-backend/internal/config"
 	"scraper-backend/internal/csvwriter"
 	"scraper-backend/internal/models"
+	"scraper-backend/internal/service"
 )
 
 // ScrapeHandler handles scrape requests from clients and delegates to the Bright Data integration.
@@ -22,15 +23,23 @@ type ScrapeHandler struct {
 	Client       *brightdata.BrightDataClient
 	Logger       *log.Logger
 	CSVWriter    *csvwriter.CSVWriter
+	Persistence  *service.PersistenceService
+	Refresh      *service.RefreshService
 	RequestLimit int64
 }
 
-func NewScrapeHandler(cfg *config.Config, client *brightdata.BrightDataClient, logger *log.Logger) *ScrapeHandler {
+func NewScrapeHandler(cfg *config.Config, client *brightdata.BrightDataClient, logger *log.Logger, persistence ...*service.PersistenceService) *ScrapeHandler {
+	var persistenceService *service.PersistenceService
+	if len(persistence) > 0 {
+		persistenceService = persistence[0]
+	}
 	return &ScrapeHandler{
 		Cfg:          cfg,
 		Client:       client,
 		Logger:       logger,
 		CSVWriter:    csvwriter.New(cfg.OutputDir),
+		Persistence:  persistenceService,
+		Refresh:      nil,
 		RequestLimit: 1 << 20,
 	}
 }
@@ -52,6 +61,14 @@ func (h *ScrapeHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	query := req.Query
+	if req.Item != "" {
+		dimensions, err := models.NormalizeSearchQuery(models.SearchQuery{Brand: req.Brand, Item: req.Item, Gender: req.Gender})
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		query = dimensions.ScraperQuery()
+	}
 	if query == "" {
 		query = req.URL
 	}
@@ -61,6 +78,26 @@ func (h *ScrapeHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	if len(query) > 500 {
 		http.Error(w, "query is too long", http.StatusBadRequest)
+		return
+	}
+
+	if h.Refresh != nil && req.Item != "" {
+		search, results, stale, err := h.Refresh.Search(r.Context(), models.SearchQuery{Brand: req.Brand, Item: req.Item, Gender: req.Gender})
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to load search: "+err.Error())
+			return
+		}
+		csvPath, err := h.CSVWriter.Write(results)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to generate CSV: "+err.Error())
+			return
+		}
+		if h.Logger != nil {
+			h.Logger.Printf("products returned from PostgreSQL search_id=%d stale=%t count=%d", search.ID, stale, len(results))
+		}
+		response := models.ScrapeResponse{Success: true, Records: len(results), CSVFile: filepath.ToSlash(csvPath), Data: results}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(response)
 		return
 	}
 
@@ -107,10 +144,19 @@ func (h *ScrapeHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.Logger.Printf("CSV generated: %s", csvPath)
 	}
 
+	completedAt := time.Now()
+	if h.Persistence != nil && req.Item != "" {
+		err := h.Persistence.Persist(ctx, models.SearchQuery{Brand: req.Brand, Item: req.Item, Gender: req.Gender}, results, completedAt)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to persist scrape results: "+err.Error())
+			return
+		}
+	}
+
 	response := models.ScrapeResponse{
 		Success:      true,
 		CollectionID: collectionID,
-		Timestamp:    time.Now().Format(time.RFC3339),
+		Timestamp:    completedAt.Format(time.RFC3339),
 		Records:      len(results),
 		CSVFile:      filepath.ToSlash(csvPath),
 		Data:         results,
