@@ -7,15 +7,28 @@ import (
 	"scraper-backend/internal/models"
 )
 
-var SeedCatalog = []models.SearchQuery{
-	{Brand: "Nike", Item: "Shoes", Gender: "Men"},
-	{Brand: "Nike", Item: "Shoes", Gender: "Women"},
-	{Brand: "Adidas", Item: "Shoes", Gender: "Men"},
-	{Brand: "Adidas", Item: "Shoes", Gender: "Women"},
-	{Brand: "Puma", Item: "T-Shirts", Gender: "Men"},
-	{Brand: "Puma", Item: "T-Shirts", Gender: "Women"},
-	{Brand: "All", Item: "Shoes", Gender: "Men"},
-	{Brand: "All", Item: "Shoes", Gender: "Women"},
+var SeedCatalog = buildSeedCatalog()
+
+func buildSeedCatalog() []models.SearchQuery {
+	brands := []string{
+		"Nike", "Adidas", "Puma", "Reebok", "New Balance", "Skechers", "Asics", "Converse",
+		"Vans", "Under Armour", "Levi's", "Roadster", "H&M", "Zara", "Uniqlo", "The North Face",
+	}
+	items := []string{"Shoes", "Sneakers", "T-Shirts", "Shirts", "Jeans", "Jackets", "Hoodies", "Shorts"}
+	genders := []string{"Men", "Women", "Unisex"}
+
+	catalog := make([]models.SearchQuery, 0, len(brands)*len(items)*len(genders)+len(items))
+	for _, brand := range brands {
+		for _, item := range items {
+			for _, gender := range genders {
+				catalog = append(catalog, models.SearchQuery{Brand: brand, Item: item, Gender: gender})
+			}
+		}
+	}
+	for _, item := range items {
+		catalog = append(catalog, models.SearchQuery{Brand: "All", Item: item, Gender: "All"})
+	}
+	return catalog
 }
 
 func SeedSearchCatalog(ctx context.Context, repo *Repository) error {
