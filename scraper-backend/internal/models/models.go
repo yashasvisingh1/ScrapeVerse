@@ -1,6 +1,9 @@
 package models
 
-import "encoding/json"
+import (
+	"encoding/json"
+	"time"
+)
 
 // ScrapeRequest contains the request payload accepted by the backend HTTP API.
 type ScrapeRequest struct {
@@ -25,6 +28,28 @@ type ScrapeResponse struct {
 type ErrorResponse struct {
 	Success bool   `json:"success"`
 	Error   string `json:"error"`
+}
+
+type ProductResponse struct {
+	ID            int64      `json:"id"`
+	Retailer      string     `json:"retailer"`
+	ExternalID    string     `json:"externalId"`
+	Title         string     `json:"title"`
+	Brand         string     `json:"brand"`
+	CurrentPrice  *float64   `json:"currentPrice"`
+	OriginalPrice *float64   `json:"originalPrice"`
+	Currency      string     `json:"currency,omitempty"`
+	Rating        *float64   `json:"rating"`
+	ReviewCount   *int64     `json:"reviewCount"`
+	ImageURL      string     `json:"imageUrl"`
+	ProductURL    string     `json:"productUrl"`
+	ScrapedAt     *time.Time `json:"scrapedAt"`
+}
+
+type SearchResponse struct {
+	Brand  string `json:"brand"`
+	Item   string `json:"item"`
+	Gender string `json:"gender"`
 }
 
 // MarshalJSON ensures error payloads are always sent as valid JSON objects.

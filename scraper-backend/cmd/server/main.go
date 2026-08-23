@@ -30,6 +30,7 @@ func main() {
 	logger := log.New(os.Stdout, "scraper-backend ", log.LstdFlags|log.LUTC)
 	var persistence *service.PersistenceService
 	var refreshService *service.RefreshService
+	var dbRepo *repository.Repository
 	if cfg.DatabaseURL != "" {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		pool, err := pgxpool.New(ctx, cfg.DatabaseURL)
@@ -49,8 +50,9 @@ func main() {
 		}
 		cancel()
 		defer pool.Close()
-		persistence = service.NewPersistenceService(repository.New(pool), cfg.ScrapeTTL)
-		refreshService = service.NewRefreshService(repository.New(pool), service.BrightDataScraper{Scraper: brightdata.NewScraper(client), PollInterval: cfg.PollInterval, PollTimeout: cfg.PollTimeout}, cfg.ScrapeTTL, logger)
+		dbRepo = repository.New(pool)
+		persistence = service.NewPersistenceService(dbRepo, cfg.ScrapeTTL)
+		refreshService = service.NewRefreshService(dbRepo, service.BrightDataScraper{Scraper: brightdata.NewScraper(client), PollInterval: cfg.PollInterval, PollTimeout: cfg.PollTimeout}, cfg.ScrapeTTL, logger)
 		worker := service.NewRefreshWorker(refreshService, cfg.ScraperWorkerInterval, logger)
 		go worker.Run(context.Background())
 		logger.Printf("database persistence enabled")
@@ -59,9 +61,15 @@ func main() {
 	}
 	handler := handlers.NewScrapeHandler(cfg, client, logger, persistence)
 	handler.Refresh = refreshService
+	mux := http.NewServeMux()
+	mux.Handle("/api/scrape", handler)
+	apiHandler := handlers.NewAPIHandler(dbRepo, refreshService, cfg.AllowedOrigins)
+	mux.Handle("/api/v1/", apiHandler)
+	mux.Handle("/health", apiHandler)
+	mux.Handle("/ready", apiHandler)
 
 	logger.Printf("server started on :8080")
-	if err := http.ListenAndServe(":8080", handler); err != nil {
+	if err := http.ListenAndServe(":8080", mux); err != nil {
 		logger.Fatalf("http server failed: %v", err)
 	}
 }

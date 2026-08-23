@@ -1,0 +1,1 @@
+export function StaleDataBanner({ refreshing }: { refreshing: boolean }) { return <div className="status-banner"><span className="status-dot" aria-hidden="true" />{refreshing ? 'Updating prices...' : "Prices may be slightly outdated. We're refreshing the latest prices."}</div> }

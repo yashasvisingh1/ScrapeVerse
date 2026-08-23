@@ -21,6 +21,7 @@ type BrightDataScraper struct {
 }
 
 type SearchRepository interface {
+	GetSearch(context.Context, models.SearchQuery) (*models.Search, error)
 	GetSearchByID(context.Context, int64) (*models.Search, error)
 	GetOrCreateSearch(context.Context, models.SearchQuery) (*models.Search, error)
 	GetProductsWithLatestPrices(context.Context, int64) ([]map[string]any, error)
@@ -54,7 +55,7 @@ func (s *RefreshService) Search(ctx context.Context, query models.SearchQuery) (
 	if err != nil {
 		return nil, nil, false, err
 	}
-	search, err := s.Repository.GetOrCreateSearch(ctx, normalized)
+	search, err := s.Repository.GetSearch(ctx, normalized)
 	if err != nil {
 		return nil, nil, false, err
 	}
@@ -74,10 +75,83 @@ func (s *RefreshService) Search(ctx context.Context, query models.SearchQuery) (
 		return search, products, true, err
 	}
 	fresh := search.ExpiresAt != nil && search.ExpiresAt.After(time.Now())
+	if !fresh && len(products) == 0 {
+		if err := s.RefreshSearch(ctx, search.ID); err != nil {
+			return nil, nil, false, err
+		}
+		search, err = s.Repository.GetSearchByID(ctx, search.ID)
+		if err != nil {
+			return nil, nil, false, err
+		}
+		products, err = s.Repository.GetProductsWithLatestPrices(ctx, search.ID)
+		return search, products, true, err
+	}
 	if !fresh {
 		s.RefreshSearchAsync(context.Background(), search.ID)
 	}
 	return search, products, !fresh, nil
+}
+
+func (s *RefreshService) SearchExisting(ctx context.Context, query models.SearchQuery) (*models.Search, []map[string]any, bool, error) {
+	if s == nil || s.Repository == nil {
+		return nil, nil, false, fmt.Errorf("refresh service is not configured")
+	}
+	normalized, err := models.NormalizeSearchQuery(query)
+	if err != nil {
+		return nil, nil, false, err
+	}
+	search, err := s.Repository.GetSearch(ctx, normalized)
+	if err != nil {
+		return nil, nil, false, err
+	}
+	products, err := s.Repository.GetProductsWithLatestPrices(ctx, search.ID)
+	if err != nil {
+		return nil, nil, false, err
+	}
+	if search.LastScrapedAt == nil {
+		if !search.RefreshInProgress {
+			if err := s.RefreshSearch(ctx, search.ID); err != nil {
+				return nil, nil, false, err
+			}
+		} else if err := s.waitForInitialRefresh(ctx, search.ID); err != nil {
+			return nil, nil, false, err
+		}
+		search, err = s.Repository.GetSearchByID(ctx, search.ID)
+		if err != nil {
+			return nil, nil, false, err
+		}
+		products, err = s.Repository.GetProductsWithLatestPrices(ctx, search.ID)
+		return search, products, true, err
+	}
+	fresh := search.ExpiresAt != nil && search.ExpiresAt.After(time.Now())
+	if !fresh {
+		s.RefreshSearchAsync(context.Background(), search.ID)
+	}
+	return search, products, !fresh, nil
+}
+
+func (s *RefreshService) StartRefresh(ctx context.Context, query models.SearchQuery) (bool, int64, error) {
+	if s == nil || s.Repository == nil || s.Scraper == nil {
+		return false, 0, fmt.Errorf("refresh service is not configured")
+	}
+	normalized, err := models.NormalizeSearchQuery(query)
+	if err != nil {
+		return false, 0, err
+	}
+	search, err := s.Repository.GetSearch(ctx, normalized)
+	if err != nil {
+		return false, 0, err
+	}
+	claimed, err := s.Repository.ClaimRefresh(ctx, search.ID)
+	if err != nil {
+		return false, 0, err
+	}
+	if !claimed {
+		s.logf("refresh skipped search_id=%d: another refresh owns the lock", search.ID)
+		return false, search.ID, nil
+	}
+	go s.refreshClaimed(context.Background(), search)
+	return true, search.ID, nil
 }
 
 func (s *RefreshService) waitForInitialRefresh(ctx context.Context, searchID int64) error {
@@ -118,6 +192,11 @@ func (s *RefreshService) RefreshSearch(ctx context.Context, searchID int64) erro
 		s.logf("refresh skipped search_id=%d: another refresh owns the lock", searchID)
 		return nil
 	}
+	return s.refreshClaimed(ctx, search)
+}
+
+func (s *RefreshService) refreshClaimed(ctx context.Context, search *models.Search) error {
+	searchID := search.ID
 	start := time.Now()
 	s.logf("refresh lock acquired search_id=%d", searchID)
 	completed := false

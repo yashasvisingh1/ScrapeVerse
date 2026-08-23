@@ -204,6 +204,32 @@ The collector's `InteractionCode.js` reads `input.query` and uses it to build th
 go test ./...
 ```
 
+## REST API
+
+List supported searches from PostgreSQL:
+
+```bash
+curl "http://localhost:8080/api/v1/searches"
+```
+
+Read products with pagination and database sorting:
+
+```bash
+curl "http://localhost:8080/api/v1/products?brand=nike&item=shoes&gender=men&page=1&page_size=20&sort=price_asc"
+```
+
+Supported sort values are `price_asc`, `price_desc`, and `rating_desc`. The optional `retailer` filter accepts `amazon`, `myntra`, or `ajio`.
+
+Start a non-blocking manual refresh:
+
+```bash
+curl -X POST "http://localhost:8080/api/v1/products/refresh" \
+  -H "Content-Type: application/json" \
+  -d '{"brand":"nike","item":"shoes","gender":"men"}'
+```
+
+`GET /health` checks the process and `GET /ready` verifies PostgreSQL connectivity. CORS only allows origins listed in `ALLOWED_ORIGINS`.
+
 ## PostgreSQL migrations and seed
 
 Create a PostgreSQL database, set `DATABASE_URL`, and apply the initial migration:

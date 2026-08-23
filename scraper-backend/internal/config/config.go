@@ -20,6 +20,7 @@ type Config struct {
 	DatabaseURL           string
 	ScrapeTTL             time.Duration
 	ScraperWorkerInterval time.Duration
+	AllowedOrigins        string
 	OutputDir             string
 }
 
@@ -47,6 +48,7 @@ func Load() (*Config, error) {
 	databaseURL := strings.TrimSpace(os.Getenv("DATABASE_URL"))
 	scrapeTTL := getEnvDuration("SCRAPE_TTL", 30*time.Minute)
 	workerInterval := getEnvDuration("SCRAPER_WORKER_INTERVAL", time.Minute)
+	allowedOrigins := strings.TrimSpace(os.Getenv("ALLOWED_ORIGINS"))
 
 	if apiToken == "" {
 		return nil, fmt.Errorf("BRIGHT_DATA_API_TOKEN is required")
@@ -79,6 +81,7 @@ func Load() (*Config, error) {
 		DatabaseURL:           databaseURL,
 		ScrapeTTL:             scrapeTTL,
 		ScraperWorkerInterval: workerInterval,
+		AllowedOrigins:        allowedOrigins,
 		OutputDir:             outputDir,
 	}, nil
 }

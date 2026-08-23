@@ -26,6 +26,9 @@ type fakeRepository struct {
 func (r *fakeRepository) GetSearchByID(context.Context, int64) (*models.Search, error) {
 	return &r.search, nil
 }
+func (r *fakeRepository) GetSearch(context.Context, models.SearchQuery) (*models.Search, error) {
+	return &r.search, nil
+}
 func (r *fakeRepository) GetOrCreateSearch(context.Context, models.SearchQuery) (*models.Search, error) {
 	return &r.search, nil
 }

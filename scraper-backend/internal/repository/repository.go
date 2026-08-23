@@ -14,6 +14,13 @@ type Repository struct {
 	Pool *pgxpool.Pool
 }
 
+type ProductPage struct {
+	Products []models.ProductResponse
+	Total    int
+}
+
+func (r *Repository) Ping(ctx context.Context) error { return r.Pool.Ping(ctx) }
+
 func New(pool *pgxpool.Pool) *Repository { return &Repository{Pool: pool} }
 
 func (r *Repository) GetSearch(ctx context.Context, query models.SearchQuery) (*models.Search, error) {
@@ -100,6 +107,46 @@ func (r *Repository) GetProductsWithLatestPrices(ctx context.Context, searchID i
 		})
 	}
 	return results, rows.Err()
+}
+
+func (r *Repository) GetProductsPage(ctx context.Context, searchID int64, page, pageSize int, sortBy, retailer string) (ProductPage, error) {
+	orderBy := "pp.current_price ASC NULLS LAST, p.id ASC"
+	switch sortBy {
+	case "price_desc":
+		orderBy = "pp.current_price DESC NULLS LAST, p.id ASC"
+	case "rating_desc":
+		orderBy = "pp.rating DESC NULLS LAST, p.id ASC"
+	}
+	args := []any{searchID}
+	filter := ""
+	if retailer != "" {
+		args = append(args, retailer)
+		filter = fmt.Sprintf(" AND lower(p.retailer)=lower($%d)", len(args))
+	}
+	var total int
+	if err := r.Pool.QueryRow(ctx, "SELECT COUNT(*) FROM products p WHERE p.search_id=$1"+filter, args...).Scan(&total); err != nil {
+		return ProductPage{}, err
+	}
+	args = append(args, pageSize, (page-1)*pageSize)
+	query := fmt.Sprintf(`SELECT p.id, p.retailer, p.external_id, p.title, p.brand, p.product_url, p.image_url,
+		pp.current_price, pp.original_price, pp.rating, pp.review_count, pp.scraped_at
+		FROM products p LEFT JOIN LATERAL (SELECT current_price, original_price, rating, review_count, scraped_at FROM product_prices WHERE product_id=p.id ORDER BY scraped_at DESC, id DESC LIMIT 1) pp ON TRUE
+		WHERE p.search_id=$1%s ORDER BY %s LIMIT $%d OFFSET $%d`, filter, orderBy, len(args)-1, len(args))
+	rows, err := r.Pool.Query(ctx, query, args...)
+	if err != nil {
+		return ProductPage{}, err
+	}
+	defer rows.Close()
+	products := []models.ProductResponse{}
+	for rows.Next() {
+		var p models.ProductResponse
+		if err := rows.Scan(&p.ID, &p.Retailer, &p.ExternalID, &p.Title, &p.Brand, &p.ProductURL, &p.ImageURL, &p.CurrentPrice, &p.OriginalPrice, &p.Rating, &p.ReviewCount, &p.ScrapedAt); err != nil {
+			return ProductPage{}, err
+		}
+		p.Currency = "INR"
+		products = append(products, p)
+	}
+	return ProductPage{Products: products, Total: total}, rows.Err()
 }
 
 func floatValue(value *float64) any {
